@@ -24,7 +24,7 @@ export async function getTeacherResponse(
   teacherName: string,
   teacherPersonality: string
 ) {
-  const model = "gemini-3-flash-preview";
+  const model = "gemini-1.5-flash";
   
   const systemInstruction = `
     You are ${teacherName}, a personal AI teacher for ${userName}.
@@ -34,16 +34,16 @@ export async function getTeacherResponse(
     
     Teaching Rules:
     1. Every answer must include:
-       - Simple explanation
-       - Step-by-step solution
-       - Real-life example
-       - Follow-up question
+       - Simple explanation (conceptual clarity)
+       - Step-by-step solution (logical breakdown)
+       - Real-life example (practical application)
+       - Follow-up question (checking for understanding)
     2. AUTOMATICALLY detect the user's language (Hindi, English, Hinglish, Urdu, Marathi).
     3. YOU MUST RESPOND IN THE SAME LANGUAGE AS THE USER.
-    4. If the user uses Hinglish, you respond in Hinglish.
-    5. Maintain memory of the conversation and be 100% accurate.
+    4. If the user uses Hinglish (Hindi written in English script), you respond in Hinglish.
+    5. Maintain deep memory of the conversation.
     6. Stay friendly, encouraging, and clear.
-    7. Keep it concise enough for a mobile chat interface.
+    7. Format output with clean Markdown for readability.
   `;
 
   return withRetry(async () => {
@@ -69,16 +69,16 @@ export async function getTeacherResponse(
 }
 
 export async function solveHomework(imageData: string, userClass: string) {
-  const model = "gemini-3-flash-preview";
+  const model = "gemini-1.5-flash";
   
   const prompt = `
     Analyze this homework image. 
-    1. If the image is too blurry to read, inform the student and ask for a clearer photo.
+    1. If the image is too blurry to read, inform the student kindly and ask for a clearer photo.
     2. Detect the language of the question and respond in that same language.
-    3. Detect the specific question or problem.
-    4. Provide a HIGHLY ACCURATE 100% Correct step-by-step solution suitable for Class ${userClass}.
-    5. Highlight the core concept or formula used.
-    6. Explain "Why" this solution works, not just what it is.
+    3. Provide a step-by-step solution suitable for Class ${userClass}.
+    4. Highlight the core concept or formula used.
+    5. Explain "Why" this solution works.
+    6. If the student has made a mistake in their own writing in the image, gently correct it.
   `;
 
   return withRetry(async () => {
@@ -99,7 +99,7 @@ export async function solveHomework(imageData: string, userClass: string) {
 }
 
 export async function generateStudyPlan(name: string, classRank: string, weakSubjects: Subject[]) {
-  const model = "gemini-3-flash-preview";
+  const model = "gemini-1.5-flash";
   const prompt = `Generate a 7-day study plan for ${name} who is in Class ${classRank}. 
   Weak subjects: ${weakSubjects.join(', ')}. 
   Focus on balancing strong and weak subjects.
@@ -119,7 +119,7 @@ export async function generateStudyPlan(name: string, classRank: string, weakSub
 }
 
 export async function analyzeMistakes(history: ChatMessage[]) {
-  const model = "gemini-3-flash-preview";
+  const model = "gemini-1.5-flash";
   const prompt = `Analyze this chat history and identify if the student is making any conceptual mistakes or has weak topics.
   Return a list of 2-3 specific short topic names (e.g. "Quadratic Equations", "Newton's 2nd Law").
   Return as a simple JSON array of strings.`;

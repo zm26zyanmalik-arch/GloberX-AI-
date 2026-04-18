@@ -73,6 +73,7 @@ export default function App() {
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const heartbeatRef = useRef<number | null>(null);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -156,6 +157,7 @@ export default function App() {
     utter.onend = () => {
       console.log("Audio segment end.");
       isSpeakingRef.current = false;
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       // Slight delay for natural flow but fast enough to feel continuous
       setTimeout(processQueue, 50); 
     };
@@ -164,6 +166,7 @@ export default function App() {
       console.error("Speech Playback Error:", e);
       isSpeakingRef.current = false;
       setIsTalking(false);
+      if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       
       // If autoplay is blocked by browser policies
       if (e.error === 'not-allowed') {
@@ -182,13 +185,14 @@ export default function App() {
 
     // Bug fix: keep the engine from timing out on long segments
     // by calling resume every few seconds if it's still "speaking"
-    const heartbeat = setInterval(() => {
+    if (heartbeatRef.current) clearInterval(heartbeatRef.current);
+    heartbeatRef.current = setInterval(() => {
       if (window.speechSynthesis.speaking) {
         window.speechSynthesis.resume();
       } else {
-        clearInterval(heartbeat);
+        if (heartbeatRef.current) clearInterval(heartbeatRef.current);
       }
-    }, 5000);
+    }, 5000) as unknown as number;
 
     window.speechSynthesis.speak(utter);
   };
@@ -266,10 +270,13 @@ export default function App() {
     const teacher = TEACHERS.find(t => t.id === selectedTeacherId)!;
     let response = null;
 
+    // Use latest state to avoid stale closure issues
+    const currentChatHistory = [...chatHistory, userMsg];
+
     try {
       response = await getTeacherResponse(
         messageText,
-        chatHistory,
+        currentChatHistory,
         user.name,
         user.class,
         user.level,
@@ -296,7 +303,7 @@ export default function App() {
         timestamp: new Date()
       };
       
-      const newHistory = [...chatHistory, userMsg, modelMsg];
+      const newHistory = [...currentChatHistory, modelMsg];
       setChatHistory(newHistory);
       setLoading(false);
       
@@ -328,10 +335,17 @@ export default function App() {
       if (newHistory.length % 4 === 0) {
         analyzeMistakes(newHistory).then(topics => {
           if (topics && topics.length > 0) {
-            setUser(prev => prev ? ({ ...prev, mistakes: Array.from(new Set([...prev.mistakes, ...topics])) }) : null);
+            setUser(prev => {
+              if (!prev) return null;
+              const updated = { ...prev, mistakes: Array.from(new Set([...prev.mistakes, ...topics])) };
+              localStorage.setItem('globerx_user', JSON.stringify(updated));
+              return updated;
+            });
           }
         });
       }
+      
+      localStorage.setItem('globerx_history', JSON.stringify(newHistory));
     } catch (error) {
       console.error(error);
     } finally {
@@ -350,6 +364,7 @@ export default function App() {
       mistakes: []
     };
     setUser(newUser);
+    localStorage.setItem('globerx_user', JSON.stringify(newUser));
     localStorage.setItem('globerx_teacher_id', selectedTeacherId);
     setScreen('test');
   };
@@ -361,6 +376,7 @@ export default function App() {
 
     const updatedUser = { ...user!, level: finalLevel };
     setUser(updatedUser);
+    localStorage.setItem('globerx_user', JSON.stringify(updatedUser));
     setScreen('home');
 
     // Generate initial study plan
@@ -1364,14 +1380,18 @@ export default function App() {
                   reader.onload = async () => {
                     try {
                       const result = await solveHomework(reader.result as string, user?.class || '10');
-                      setChatHistory([{
-                        id: 'scanner-result',
+                      const solverMsg: ChatMessage = {
+                        id: 'scanner-' + Date.now(),
                         role: 'model',
                         text: `### Found Solution!\n\n${result}`,
                         timestamp: new Date()
-                      }]);
+                      };
+                      setChatHistory(prev => [...prev, solverMsg]);
                       setScreen('chat');
                       speak("I've solved the problem for you. Let's go through it!");
+                      
+                      // Save history after scan
+                      localStorage.setItem('globerx_history', JSON.stringify([...chatHistory, solverMsg]));
                     } catch (error) {
                       console.error("Scanner Error:", error);
                       // Fallback: stay on scanner but show error
