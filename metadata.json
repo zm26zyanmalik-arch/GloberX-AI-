@@ -1,0 +1,6 @@
+{
+  "name": "GloberX AI - Personal Study System",
+  "description": "Smart class-based AI study system (Classes 1-12) with personalized plans, tests, and human-like AI teachers.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["Class-based Learning", "Personalized Testing", "Adaptive Study Planner", "Homework Solver"]
+}

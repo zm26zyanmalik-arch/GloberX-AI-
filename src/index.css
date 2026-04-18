@@ -1,0 +1,85 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Inter", sans-serif;
+  
+  --color-brand-primary: #FFFFFF;
+  --color-brand-accent-start: #FFD200;
+  --color-brand-accent-end: #FFE05D;
+  --color-brand-secondary: #FAFAFA;
+  --color-brand-background: #FFFFFF;
+  --color-brand-text: #1C1C1C;
+  --color-brand-text-muted: #71717A;
+  --color-brand-pill-bg: #FFFBEB;
+  --color-brand-pill-text: #B45309;
+  
+  --radius-xl: 16px;
+  --radius-2xl: 24px;
+}
+
+@layer base {
+  body {
+    @apply bg-brand-background text-brand-text font-sans antialiased overflow-x-hidden;
+  }
+}
+
+@layer utilities {
+  .responsive-container {
+    @apply w-full max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
+  }
+
+  .bg-accent-gradient {
+    background: linear-gradient(135deg, var(--color-brand-accent-start), var(--color-brand-accent-end));
+  }
+
+  .teacher-card-active {
+    @apply ring-4 ring-brand-accent-start/30 bg-white border-brand-accent-start;
+  }
+  
+  .glass-card {
+    @apply bg-white/90 backdrop-blur-sm border border-gray-100 shadow-[0_8px_32px_rgba(0,0,0,0.04)];
+  }
+  
+  .premium-card {
+    @apply bg-white rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.04)] border border-gray-100 transition-all duration-300;
+  }
+
+  .pill {
+    @apply inline-block px-3 py-1 bg-brand-pill-bg text-brand-pill-text rounded-full text-[11px] font-bold uppercase tracking-wider;
+  }
+
+  .safe-area-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Character Animations */
+@keyframes blink {
+  0%, 90%, 100% { transform: scaleY(1); }
+  95% { transform: scaleY(0.1); }
+}
+
+.animate-blink {
+  animation: blink 4s infinite;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+::-webkit-scrollbar-thumb {
+  @apply bg-brand-accent-start/20 rounded-full hover:bg-brand-accent-start/40;
+}
