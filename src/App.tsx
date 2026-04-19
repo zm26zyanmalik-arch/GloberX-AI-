@@ -197,7 +197,7 @@ export default function App() {
     window.speechSynthesis.speak(utter);
   };
 
-  const currentTeacher = TEACHERS.find(t => t.id === selectedTeacherId)!;
+  const currentTeacher = TEACHERS.find(t => t.id === selectedTeacherId) || TEACHERS[0];
 
   // Persistence Layer
   useEffect(() => {

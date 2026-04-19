@@ -1,7 +1,18 @@
 import { GoogleGenAI } from "@google/genai";
 import { ChatMessage, Subject, Level } from '../types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+let aiInstance: GoogleGenAI | null = null;
+
+const getAI = () => {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("GEMINI_API_KEY is missing. AI features will be unavailable.");
+    }
+    aiInstance = new GoogleGenAI({ apiKey: apiKey || 'missing-key' });
+  }
+  return aiInstance;
+};
 
 // Robust retry helper
 const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 1000): Promise<T> => {
@@ -24,7 +35,7 @@ export async function getTeacherResponse(
   teacherName: string,
   teacherPersonality: string
 ) {
-  const model = "gemini-1.5-flash";
+  const model = "gemini-3-flash-preview";
   
   const systemInstruction = `
     You are ${teacherName}, a personal AI teacher for ${userName}.
@@ -56,7 +67,7 @@ export async function getTeacherResponse(
       { role: 'user', parts: [{ text: teacherPrompt }] }
     ];
 
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model,
       contents,
       config: {
@@ -69,7 +80,7 @@ export async function getTeacherResponse(
 }
 
 export async function solveHomework(imageData: string, userClass: string) {
-  const model = "gemini-1.5-flash";
+  const model = "gemini-3-flash-preview";
   
   const prompt = `
     Analyze this homework image. 
@@ -82,7 +93,7 @@ export async function solveHomework(imageData: string, userClass: string) {
   `;
 
   return withRetry(async () => {
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model,
       contents: [
         {
@@ -99,14 +110,14 @@ export async function solveHomework(imageData: string, userClass: string) {
 }
 
 export async function generateStudyPlan(name: string, classRank: string, weakSubjects: Subject[]) {
-  const model = "gemini-1.5-flash";
+  const model = "gemini-3-flash-preview";
   const prompt = `Generate a 7-day study plan for ${name} who is in Class ${classRank}. 
   Weak subjects: ${weakSubjects.join(', ')}. 
   Focus on balancing strong and weak subjects.
   Return as a JSON array of objects with keys: id, title, subject, dueDate.`;
 
   return withRetry(async () => {
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model,
       contents: prompt,
       config: {
@@ -119,14 +130,14 @@ export async function generateStudyPlan(name: string, classRank: string, weakSub
 }
 
 export async function analyzeMistakes(history: ChatMessage[]) {
-  const model = "gemini-1.5-flash";
+  const model = "gemini-3-flash-preview";
   const prompt = `Analyze this chat history and identify if the student is making any conceptual mistakes or has weak topics.
   Return a list of 2-3 specific short topic names (e.g. "Quadratic Equations", "Newton's 2nd Law").
   Return as a simple JSON array of strings.`;
 
   return withRetry(async () => {
     const textHistory = history.map(m => `${m.role}: ${m.text}`).join('\n');
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model,
       contents: prompt + "\n\nChat History:\n" + textHistory,
       config: {
