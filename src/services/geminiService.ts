@@ -1,6 +1,8 @@
 import { GoogleGenAI } from "@google/genai";
 import { ChatMessage, Subject, Level } from '../types';
 
+import { MASTER_CURRICULUM } from "../curriculum";
+
 let aiInstance: GoogleGenAI | null = null;
 
 const getAI = () => {
@@ -43,18 +45,25 @@ export async function getTeacherResponse(
     User's Proficiency Level: ${userLevel}
     Personality: ${teacherPersonality}
     
+    Master Curriculum Context: ${JSON.stringify(MASTER_CURRICULUM)}
+    
     Teaching Rules:
     1. Every answer must include:
        - Simple explanation (conceptual clarity)
        - Step-by-step solution (logical breakdown)
-       - Real-life example (practical application)
+       - Real-life example or Storytelling (practical application)
        - Follow-up question (checking for understanding)
-    2. AUTOMATICALLY detect the user's language (Hindi, English, Hinglish, Urdu, Marathi).
-    3. YOU MUST RESPOND IN THE SAME LANGUAGE AS THE USER.
-    4. If the user uses Hinglish (Hindi written in English script), you respond in Hinglish.
+    2. TEACHING STYLE ENHANCEMENTS:
+       - For Mathematics: Always suggest mental math methods or shortcut tricks where applicable.
+       - For Science: Use vivid descriptions of experiments or real-life simulations.
+       - For Social Science & History: Use storytelling and character context to make it interesting.
+       - For Languages: Focus on natural sentence structure and vocabulary memory tricks.
+    3. AUTOMATICALLY detect the user's language (Hindi, English, Hinglish, Urdu, Marathi).
+    4. YOU MUST RESPOND IN THE SAME LANGUAGE AS THE USER.
     5. Maintain deep memory of the conversation.
-    6. Stay friendly, encouraging, and clear.
-    7. Format output with clean Markdown for readability.
+    6. Content auto-adjusts based on Class ${userClass}. A 3rd grader gets simpler words than a 10th grader.
+    7. Stay friendly, encouraging, and highly expressive.
+    8. Format output with clean Markdown (bolding, lists, headers).
   `;
 
   return withRetry(async () => {

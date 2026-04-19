@@ -44,10 +44,25 @@ import {
 import Markdown from 'react-markdown';
 import { User, Subject, TeacherId, ChatMessage, StudyTask, Level, QuizQuestion, Note, ChatThread, Language } from './types.ts';
 import { TEACHERS, SUBJECTS, DEFAULT_QUIZ, LANGUAGES } from './constants.ts';
+import { MASTER_CURRICULUM } from './curriculum.ts';
 import { Button, Card, Avatar, cn, ErrorBoundary } from './components/UI.tsx';
 import { getTeacherResponse, solveHomework, generateStudyPlan, analyzeMistakes } from './services/geminiService.ts';
 
 type Screen = 'onboarding' | 'test' | 'login' | 'home' | 'chat' | 'planner' | 'quiz' | 'scanner' | 'analytics' | 'history' | 'notes';
+
+const DEFAULT_STATS = {
+  quizzesCompleted: 0,
+  chatHours: 0,
+  studySessions: 0,
+  subjectMastery: {
+    'Maths': 0,
+    'Science': 0,
+    'English': 0,
+    'Hindi': 0,
+    'Social Science': 0
+  },
+  lastActive: new Date()
+};
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('login');
@@ -64,8 +79,11 @@ export default function App() {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [selectedSubjectForPlanner, setSelectedSubjectForPlanner] = useState<string | null>(null);
+  const [completedTopics, setCompletedTopics] = useState<string[]>([]);
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
+  const [authName, setAuthName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [authError, setAuthError] = useState('');
@@ -132,9 +150,13 @@ export default function App() {
     const teacher = TEACHERS.find(t => t.id === selectedTeacherId);
 
     // Multi-language detection
-    const hasHindi = /[\u0900-\u097F]/.test(segment);
+    const hasDevanagari = /[\u0900-\u097F]/.test(segment);
     const isUrdu = /[\u0600-\u06FF]/.test(segment);
-    utter.lang = hasHindi ? 'hi-IN' : (isUrdu ? 'ur-PK' : 'en-IN');
+    
+    // Default to en-IN, switch if specific scripts detected
+    if (hasDevanagari) utter.lang = 'hi-IN';
+    else if (isUrdu) utter.lang = 'ur-PK';
+    else utter.lang = 'en-IN';
 
     const preferredVoice = voices.find(v => 
       v.lang.startsWith(utter.lang.split('-')[0]) &&
@@ -205,6 +227,10 @@ export default function App() {
     if (savedUser) {
       try {
         const parsed = JSON.parse(savedUser);
+        // Reset/Initialize analytics if missing or corrupted
+        if (!parsed.stats || typeof parsed.stats.quizzesCompleted !== 'number') {
+          parsed.stats = DEFAULT_STATS;
+        }
         setUser(parsed);
         if (parsed.onboarded) setScreen('home');
         else setScreen('onboarding');
@@ -237,6 +263,29 @@ export default function App() {
         console.error("Failed to load notes", e);
       }
     }
+
+    const savedCompleted = localStorage.getItem('globerx_completed_topics');
+    if (savedCompleted) {
+      try {
+        setCompletedTopics(JSON.parse(savedCompleted));
+      } catch (e) {
+        console.error("Failed to load completed topics", e);
+      }
+    }
+
+    const savedThreads = localStorage.getItem('globerx_threads');
+    if (savedThreads) {
+      try {
+        const parsed = JSON.parse(savedThreads);
+        setThreads(parsed.map((t: any) => ({ 
+          ...t, 
+          lastMessageAt: new Date(t.lastMessageAt), 
+          messages: t.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) })) 
+        })));
+      } catch (e) {
+        console.error("Failed to load threads", e);
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -250,6 +299,32 @@ export default function App() {
   useEffect(() => {
     if (notes.length > 0) localStorage.setItem('globerx_notes', JSON.stringify(notes));
   }, [notes]);
+
+  useEffect(() => {
+    localStorage.setItem('globerx_completed_topics', JSON.stringify(completedTopics));
+  }, [completedTopics]);
+
+  useEffect(() => {
+    if (threads.length > 0) localStorage.setItem('globerx_threads', JSON.stringify(threads));
+  }, [threads]);
+
+  const trackActivity = (type: 'quiz' | 'chat' | 'study' | 'subject', subjectName?: string, value?: number) => {
+    if (!user) return;
+    
+    const updatedStats = { ...user.stats };
+    updatedStats.lastActive = new Date();
+
+    if (type === 'quiz') updatedStats.quizzesCompleted += 1;
+    if (type === 'chat') updatedStats.chatHours += 0.1; // Estimate 6 mins per substantial chat
+    if (type === 'study') updatedStats.studySessions += 1;
+    if (type === 'subject' && subjectName) {
+      const current = updatedStats.subjectMastery[subjectName] || 0;
+      updatedStats.subjectMastery[subjectName] = Math.min(100, (value !== undefined ? value : current + 5));
+    }
+
+    const updatedUser = { ...user, stats: updatedStats };
+    setUser(updatedUser);
+  };
 
   const handleSendMessage = async (overrideText?: string) => {
     const messageText = overrideText || input.trim();
@@ -306,6 +381,7 @@ export default function App() {
       const newHistory = [...currentChatHistory, modelMsg];
       setChatHistory(newHistory);
       setLoading(false);
+      trackActivity('chat');
       
       setThreads(prev => {
         const threadId = activeThreadId || Date.now().toString();
@@ -354,22 +430,31 @@ export default function App() {
   };
 
   const handleOnboarding = (data: Partial<User>) => {
+    if (!user) return;
     const newUser: User = {
-      name: data.name || 'Student',
-      class: data.class || '8',
+      ...user,
+      name: data.name || user.name || 'Student',
+      class: data.class || user.class || '8',
       level: 'Beginner', 
-      weakSubjects: data.weakSubjects || [],
-      preferredLanguage: data.preferredLanguage || 'English',
+      weakSubjects: data.weakSubjects || user.weakSubjects || [],
+      preferredLanguage: data.preferredLanguage || user.preferredLanguage || 'English',
       onboarded: true,
-      mistakes: []
+      mistakes: [],
+      stats: user.stats || DEFAULT_STATS
     };
     setUser(newUser);
     localStorage.setItem('globerx_user', JSON.stringify(newUser));
+    // If we have an email from auth session, save it there too
+    const userEmail = localStorage.getItem('globerx_session_email');
+    if (userEmail) {
+      localStorage.setItem(`user_${userEmail}`, JSON.stringify(newUser));
+    }
     localStorage.setItem('globerx_teacher_id', selectedTeacherId);
     setScreen('test');
   };
 
   const finalizeTest = (score: number) => {
+    trackActivity('quiz');
     let finalLevel: Level = 'Beginner';
     if (score >= 8) finalLevel = 'Advanced';
     else if (score >= 5) finalLevel = 'Intermediate';
@@ -386,7 +471,19 @@ export default function App() {
   };
 
   const renderTest = () => {
-    const questions: QuizQuestion[] = [
+    const isPrimary = parseInt(user?.class || '1') <= 5;
+    const questions: QuizQuestion[] = isPrimary ? [
+      { id: 't1', question: "What is 15 + 28?", options: ["33", "43", "45", "38"], correctAnswer: 1 },
+      { id: 't2', question: "Which animal is the King of the Jungle?", options: ["Tiger", "Lion", "Elephant", "Giraffe"], correctAnswer: 1 },
+      { id: 't3', question: "How many days are there in a week?", options: ["5", "6", "7", "8"], correctAnswer: 2 },
+      { id: 't4', question: "What comes after Monday?", options: ["Wednesday", "Tuesday", "Thursday", "Friday"], correctAnswer: 1 },
+      { id: 't5', question: "Opposite of 'Hot'?", options: ["Cold", "Warm", "Burning", "Ice"], correctAnswer: 0 },
+      { id: 't6', question: "Which shape has 3 sides?", options: ["Square", "Circle", "Triangle", "Star"], correctAnswer: 2 },
+      { id: 't7', question: "Sense organ for smell?", options: ["Nose", "Ear", "Eye", "Tongue"], correctAnswer: 0 },
+      { id: 't8', question: "What color is a ripe banana?", options: ["Red", "Green", "Yellow", "Blue"], correctAnswer: 2 },
+      { id: 't9', question: "2 x 5 = ?", options: ["7", "10", "12", "8"], correctAnswer: 1 },
+      { id: 't10', question: "How many letters are in 'APPLE'?", options: ["4", "5", "6", "3"], correctAnswer: 1 },
+    ] : [
       { id: 't1', question: "If 2x + 5 = 15, what is x?", options: ["5", "10", "2", "7"], correctAnswer: 0 },
       { id: 't2', question: "Which organ pumps blood throughout the body?", options: ["Lungs", "Brain", "Heart", "Liver"], correctAnswer: 2 },
       { id: 't3', question: "Identify the adjective: 'The smart student passed the test.'", options: ["Passed", "Smart", "Student", "Test"], correctAnswer: 1 },
@@ -672,6 +769,7 @@ export default function App() {
                 type="text" 
                 className="w-full p-4 rounded-xl bg-gray-50 border border-gray-100 outline-none focus:ring-2 ring-brand-accent-start transition-all"
                 placeholder="Enter your name"
+                value={user?.name || ''}
                 onChange={(e) => setUser(prev => ({ ...prev!, name: e.target.value }))}
               />
             </div>
@@ -684,7 +782,7 @@ export default function App() {
                   value={user?.class || '8'}
                   onChange={(e) => setUser(prev => ({ ...prev!, class: e.target.value }))}
                 >
-                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(num => (
+                  {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(num => (
                     <option key={num} value={String(num)}>Class {num}</option>
                   ))}
                 </select>
@@ -740,6 +838,10 @@ export default function App() {
     e.preventDefault();
     setAuthError('');
     
+    if (authMode === 'signup' && !authName.trim()) {
+      setAuthError('Please enter your name');
+      return;
+    }
     if (!email.includes('@')) {
       setAuthError('Please enter a valid email address');
       return;
@@ -750,38 +852,50 @@ export default function App() {
     }
 
     setLoading(true);
-    console.log(`${authMode === 'login' ? 'Login' : 'Signup'} attempt for ${email}`);
-
+    
     try {
       // Simulate API call
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 1200));
       
-      console.log(`${authMode === 'login' ? 'Login' : 'Signup'} success!`);
-      // Initialize guest user state to prevent crashes in onboarding
-      setUser({
-        name: '',
-        class: '8',
-        level: 'Beginner',
-        weakSubjects: [],
-        preferredLanguage: 'English',
-        onboarded: false,
-        mistakes: []
-      });
+      const storedUser = localStorage.getItem(`user_${email}`);
+      
+      if (authMode === 'login') {
+        if (storedUser) {
+          const parsed = JSON.parse(storedUser);
+          setUser(parsed);
+          localStorage.setItem('globerx_user', JSON.stringify(parsed));
+          localStorage.setItem('globerx_session_email', email);
+          if (parsed.onboarded) setScreen('home');
+          else setScreen('onboarding');
+        } else {
+          setAuthError('User not found. Please sign up.');
+          setLoading(false);
+          return;
+        }
+      } else {
+        // Signup
+        const newUser: User = {
+          name: authName,
+          class: '10',
+          level: 'Beginner',
+          weakSubjects: [],
+          preferredLanguage: 'English',
+          onboarded: false,
+          mistakes: [],
+          stats: DEFAULT_STATS
+        };
+        localStorage.setItem(`user_${email}`, JSON.stringify(newUser));
+        localStorage.setItem('globerx_session_email', email);
+        setUser(newUser);
+        setScreen('onboarding');
+      }
+      
       setShowAuthModal(false);
-      setScreen('onboarding');
-      // Save initial state to avoid lost sessions if page reloads during onboarding
-      localStorage.setItem('globerx_user', JSON.stringify({
-        name: '',
-        class: '8',
-        level: 'Beginner',
-        weakSubjects: [],
-        preferredLanguage: 'English',
-        onboarded: false,
-        mistakes: []
-      }));
+      // Clear sensitive fields
+      setPassword('');
+      setAuthName('');
     } catch (err) {
-      console.error("Auth error:", err);
-      setAuthError('Network error. Please try again.');
+      setAuthError('Authentication failed. Try again.');
     } finally {
       setLoading(false);
     }
@@ -816,6 +930,21 @@ export default function App() {
               </div>
 
               <form onSubmit={handleAuth} className="space-y-4">
+                {authMode === 'signup' && (
+                  <div className="space-y-1">
+                    <div className="relative">
+                      <UserIcon className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                      <input 
+                        type="text" 
+                        placeholder="Full Name" 
+                        className="w-full pl-12 pr-4 py-3.5 rounded-xl bg-gray-50 border border-gray-100 outline-none focus:ring-2 ring-brand-accent-start transition-all font-medium"
+                        value={authName}
+                        onChange={(e) => setAuthName(e.target.value)}
+                        required
+                      />
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <div className="relative">
                     <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
@@ -873,15 +1002,18 @@ export default function App() {
                     key={provider.id}
                     type="button"
                     onClick={() => {
+                      const email = `${provider.id}@example.com`;
                       setUser({
-                        name: '',
-                        class: '10',
+                        name: `Social User`,
+                        class: '8',
                         level: 'Beginner',
                         weakSubjects: [],
                         preferredLanguage: 'English',
                         onboarded: false,
-                        mistakes: []
+                        mistakes: [],
+                        stats: DEFAULT_STATS
                       });
+                      localStorage.setItem('globerx_session_email', email);
                       setScreen('onboarding');
                       setShowAuthModal(false);
                     }}
@@ -1028,6 +1160,43 @@ export default function App() {
           {plannerTasks.length === 0 && (
             <div className="text-center py-8 opacity-40 italic text-sm">Generating your personalized class roadmap...</div>
           )}
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="text-xs font-bold uppercase tracking-widest text-brand-text-muted">Master Curriculum (Class 1-10)</div>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          {Object.keys(MASTER_CURRICULUM).map(subject => (
+            <Card 
+              key={subject} 
+              className="p-5 hover:border-brand-accent-start transition-all cursor-pointer bg-white group"
+              onClick={() => {
+                setSelectedSubjectForPlanner(subject);
+                setScreen('planner');
+              }}
+            >
+              <div className="flex justify-between items-start mb-4">
+                <div className={cn(
+                  "w-10 h-10 rounded-xl flex items-center justify-center transition-transform group-hover:scale-110",
+                  subject === 'Mathematics' ? "bg-blue-50 text-blue-500" :
+                  subject === 'Science' ? "bg-green-50 text-green-500" :
+                  subject === 'Social Science' ? "bg-orange-50 text-orange-500" :
+                  subject === 'English' ? "bg-purple-50 text-purple-500" :
+                  subject === 'Hindi' ? "bg-red-50 text-red-500" : "bg-teal-50 text-teal-500"
+                )}>
+                  {subject === 'Mathematics' && <Plus size={22} />}
+                  {subject === 'Science' && <Lightbulb size={22} />}
+                  {subject === 'Social Science' && <Layers size={22} />}
+                  {subject === 'English' && <BookOpen size={22} />}
+                  {subject === 'Hindi' && <Edit2 size={22} />}
+                  {subject === 'Urdu' && <Mic size={22} />}
+                </div>
+                <ArrowRight className="text-gray-200 group-hover:text-brand-accent-start transition-colors" size={18} />
+              </div>
+              <div className="font-bold text-base tracking-tight">{subject}</div>
+              <div className="text-[10px] text-brand-text-muted mt-1 uppercase font-bold tracking-widest">View 15 Key Topics</div>
+            </Card>
+          ))}
         </div>
       </div>
 
@@ -1215,69 +1384,206 @@ export default function App() {
     </div>
   );
 
-  const renderPlanner = () => (
-    <div className="p-6 pb-32 space-y-6">
-      <header className="flex items-center gap-4">
-        <button onClick={() => setScreen('home')} className="p-2 bg-white rounded-xl shadow-sm hover:bg-gray-50 transition-all border border-gray-100">
-          <ArrowLeft size={20} />
-        </button>
-        <h1 className="text-2xl font-display font-bold">Study Planner</h1>
-      </header>
+  const toggleTopic = (subject: string, topicName: string) => {
+    const key = `${subject}:${topicName}`;
+    const isNowDone = !completedTopics.includes(key);
+    
+    setCompletedTopics(prev => 
+      prev.includes(key) ? prev.filter(k => k !== key) : [...prev, key]
+    );
 
-      <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6">
-         {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day, i) => (
-           <div key={day} className={cn(
-             "min-w-14 h-20 rounded-2xl flex flex-col items-center justify-center gap-1 border transition-all",
-             i === 1 ? "bg-accent-gradient border-transparent" : "bg-white border-gray-100"
-           )}>
-             <span className="text-[10px] font-bold uppercase tracking-widest opacity-60">{day}</span>
-             <span className="text-lg font-bold">{17 + i}</span>
-           </div>
-         ))}
-      </div>
+    if (isNowDone) {
+      trackActivity('study');
+      trackActivity('subject', subject);
+    }
+  };
 
-      <section className="space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="font-bold">Today's Tasks</h3>
-          <Button variant="ghost" size="sm" className="text-xs">Add Task <Plus size={14} /></Button>
+  const renderPlanner = () => {
+    if (selectedSubjectForPlanner) {
+      const subjectData = MASTER_CURRICULUM[selectedSubjectForPlanner];
+      const topics = subjectData.topics;
+      const completedCount = topics.filter(t => completedTopics.includes(`${selectedSubjectForPlanner}:${t.name}`)).length;
+      const progress = Math.round((completedCount / topics.length) * 100);
+
+      return (
+        <div className="p-6 pb-32 space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+          <header className="flex items-center gap-4">
+            <button 
+              onClick={() => setSelectedSubjectForPlanner(null)} 
+              className="p-2 bg-white rounded-xl shadow-sm hover:bg-gray-50 transition-all border border-gray-100"
+            >
+              <ArrowLeft size={20} />
+            </button>
+            <div>
+              <h1 className="text-2xl font-display font-bold">{selectedSubjectForPlanner}</h1>
+              <p className="text-[10px] font-bold text-brand-text-muted uppercase tracking-widest">Mastery Level: {progress}%</p>
+            </div>
+          </header>
+
+          <Card className="bg-accent-gradient border-none p-6 text-brand-text space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="font-bold text-lg">Curriculum Guide</h3>
+              <div className="bg-white/20 px-3 py-1 rounded-full text-xs font-bold">Class {user?.class} Roadmap</div>
+            </div>
+            <p className="text-sm opacity-90 font-medium leading-relaxed">
+              We've identified {topics.length} key topics essential for Class {user?.class} {selectedSubjectForPlanner}. 
+              Master these to excel in your final exams and real-world applications.
+            </p>
+            <div className="w-full bg-black/10 h-3 rounded-full overflow-hidden">
+               <motion.div 
+                initial={{ width: 0 }}
+                animate={{ width: `${progress}%` }}
+                className="h-full bg-white shadow-[0_0_10px_white]"
+               />
+            </div>
+          </Card>
+
+          <div className="space-y-4">
+             <h3 className="text-xs font-bold uppercase tracking-widest text-brand-text-muted">Structured Topic List</h3>
+             <div className="space-y-3">
+                {topics.map((topic, i) => {
+                  const isDone = completedTopics.includes(`${selectedSubjectForPlanner}:${topic.name}`);
+                  return (
+                    <Card 
+                      key={topic.name} 
+                      className={cn(
+                        "group hover:border-brand-accent-start transition-all cursor-pointer bg-white",
+                        isDone && "bg-gray-50 border-transparent opacity-80"
+                      )}
+                    >
+                      <div className="flex items-start gap-4">
+                        <div 
+                          onClick={(e) => { e.stopPropagation(); toggleTopic(selectedSubjectForPlanner, topic.name); }}
+                          className={cn(
+                            "w-10 h-10 rounded-xl flex items-center justify-center transition-all shrink-0 shadow-sm",
+                            isDone ? "bg-green-100 text-green-500" : "bg-gray-100 text-gray-400"
+                          )}
+                        >
+                          {isDone ? <CheckCircle2 size={20} /> : <div className="text-xs font-bold">{i + 1}</div>}
+                        </div>
+                        <div 
+                          className="flex-1"
+                          onClick={() => {
+                            setInput(`I want to learn about "${topic.name}" in ${selectedSubjectForPlanner} for Class ${user?.class}.`);
+                            handleSendMessage(`Explain the topic "${topic.name}" for ${selectedSubjectForPlanner} (Class ${user?.class}). Give me a clear explanation with real-life examples and shortcut tricks.`);
+                            setScreen('chat');
+                          }}
+                        >
+                          <h4 className={cn("font-bold text-sm", isDone && "line-through opacity-50")}>{topic.name}</h4>
+                          <p className="text-xs text-brand-text-muted mt-1 leading-normal italic">{topic.description}</p>
+                          <div className="mt-3 flex items-center gap-2 text-[10px] font-bold text-brand-accent-start uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity">
+                            Start Chapter <ArrowRight size={10} />
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+                  );
+                })}
+             </div>
+          </div>
         </div>
-        
-        {plannerTasks.length === 0 ? (
-          <div className="p-12 text-center space-y-2 opacity-50">
-            <Calendar className="mx-auto" size={40} />
-            <p className="text-sm font-medium">No tasks for today. Relax! ✨</p>
+      );
+    }
+
+    return (
+      <div className="p-6 pb-32 space-y-8 animate-in fade-in duration-500">
+        <header className="flex items-center gap-4">
+          <button onClick={() => setScreen('home')} className="p-2 bg-white rounded-xl shadow-sm hover:bg-gray-50 transition-all border border-gray-100">
+            <ArrowLeft size={20} />
+          </button>
+          <h1 className="text-2xl font-display font-bold">Study Planner</h1>
+        </header>
+
+        <div className="flex gap-4 overflow-x-auto pb-2 -mx-6 px-6 no-scrollbar">
+           {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((day, i) => {
+             const today = new Date();
+             const dayDiff = i - (today.getDay() === 0 ? 6 : today.getDay() - 1);
+             const targetDate = new Date(today);
+             targetDate.setDate(today.getDate() + dayDiff);
+             
+             return (
+               <div key={day} className={cn(
+                 "min-w-14 h-20 rounded-2xl flex flex-col items-center justify-center gap-1 border transition-all",
+                 dayDiff === 0 ? "bg-accent-gradient border-transparent shadow-lg scale-105" : "bg-white border-gray-100 opacity-60"
+               )}>
+                 <span className="text-[10px] font-bold uppercase tracking-widest opacity-60">{day}</span>
+                 <span className="text-lg font-bold">{targetDate.getDate()}</span>
+               </div>
+             );
+           })}
+        </div>
+
+        <section className="space-y-4">
+          <div className="text-xs font-bold uppercase tracking-widest text-brand-text-muted">Academic Roadmap</div>
+          <div className="grid grid-cols-2 gap-3">
+             {Object.keys(MASTER_CURRICULUM).map(subject => {
+                const count = MASTER_CURRICULUM[subject].topics.filter(t => completedTopics.includes(`${subject}:${t.name}`)).length;
+                const total = MASTER_CURRICULUM[subject].topics.length;
+                return (
+                  <Card 
+                    key={subject} 
+                    className="p-4 hover:border-brand-accent-start transition-all cursor-pointer bg-white"
+                    onClick={() => setSelectedSubjectForPlanner(subject)}
+                  >
+                    <div className="flex items-center justify-between mb-2">
+                       <div className="text-sm font-bold truncate">{subject}</div>
+                       <ChevronRight className="text-gray-300" size={16} />
+                    </div>
+                    <div className="w-full bg-gray-100 h-1.5 rounded-full overflow-hidden">
+                       <div className="bg-brand-accent-start h-full rounded-full" style={{ width: `${(count/total) * 100}%` }} />
+                    </div>
+                    <div className="text-[9px] font-bold text-brand-text-muted mt-2 uppercase tracking-widest">
+                       {count}/{total} Topics
+                    </div>
+                  </Card>
+                );
+             })}
           </div>
-        ) : (
-          <div className="space-y-3">
-            {plannerTasks.map(task => (
-              <Card key={task.id} className="flex items-center gap-4 p-4">
-                <div className={cn(
-                  "p-3 rounded-2xl",
-                  task.subject === 'Maths' ? "bg-red-50 text-red-500" :
-                  task.subject === 'Science' ? "bg-green-50 text-green-500" : "bg-blue-50 text-blue-500"
-                )}>
-                  <BookOpen size={20} />
-                </div>
-                <div className="flex-1">
-                  <h4 className="text-sm font-bold">{task.title}</h4>
-                  <p className="text-[10px] text-brand-text-muted font-bold uppercase tracking-widest italic">{task.subject}</p>
-                </div>
-                <button 
-                  onClick={() => setPlannerTasks(prev => prev.map(t => t.id === task.id ? { ...t, completed: !t.completed } : t))}
-                  className={cn(
-                    "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all",
-                    task.completed ? "bg-green-500 border-green-500 text-white" : "border-gray-200"
-                  )}
-                >
-                  {task.completed && <CheckCircle2 size={16} />}
-                </button>
-              </Card>
-            ))}
+        </section>
+
+        <section className="space-y-4">
+          <div className="flex justify-between items-center text-xs font-bold uppercase tracking-widest text-brand-text-muted">
+            <span>Critical Tasks</span>
+            <button className="text-brand-accent-start">Edit All</button>
           </div>
-        )}
-      </section>
-    </div>
-  );
+          
+          {plannerTasks.length === 0 ? (
+            <div className="p-12 text-center bg-gray-50 rounded-3xl border border-dashed border-gray-200">
+              <Calendar className="mx-auto opacity-30" size={40} />
+              <p className="text-sm font-bold text-gray-400 mt-4 uppercase tracking-widest">Generating personalized tasks...</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {plannerTasks.map(task => (
+                <Card key={task.id} className="flex items-center gap-4 p-4 border border-gray-100 bg-white">
+                  <div className={cn(
+                    "w-10 h-10 rounded-xl flex items-center justify-center",
+                    task.subject === 'Maths' ? "bg-blue-50 text-blue-500" :
+                    task.subject === 'Science' ? "bg-green-50 text-green-500" : "bg-purple-50 text-purple-500"
+                  )}>
+                    <BookOpen size={20} />
+                  </div>
+                  <div className="flex-1">
+                    <h4 className="text-sm font-bold">{task.title}</h4>
+                    <p className="text-[10px] text-brand-text-muted font-bold uppercase tracking-widest">{task.subject}</p>
+                  </div>
+                  <button 
+                    onClick={() => setPlannerTasks(prev => prev.map(t => t.id === task.id ? { ...t, completed: !t.completed } : t))}
+                    className={cn(
+                      "w-6 h-6 rounded-full border-2 flex items-center justify-center transition-all shadow-sm",
+                      task.completed ? "bg-green-500 border-green-500 text-white" : "border-gray-200 bg-white"
+                    )}
+                  >
+                    {task.completed && <CheckCircle2 size={16} />}
+                  </button>
+                </Card>
+              ))}
+            </div>
+          )}
+        </section>
+      </div>
+    );
+  };
 
   const renderQuiz = () => {
     if (quizProgress.finished) {
@@ -1389,6 +1695,8 @@ export default function App() {
                       setChatHistory(prev => [...prev, solverMsg]);
                       setScreen('chat');
                       speak("I've solved the problem for you. Let's go through it!");
+                      trackActivity('chat');
+                      trackActivity('study');
                       
                       // Save history after scan
                       localStorage.setItem('globerx_history', JSON.stringify([...chatHistory, solverMsg]));
@@ -1426,72 +1734,84 @@ export default function App() {
     </div>
   );
 
-  const renderAnalytics = () => (
-    <div className="p-6 pb-32 space-y-8">
-      <header className="flex justify-between items-center">
-        <div className="flex items-center gap-4">
-          <button onClick={() => setScreen('home')} className="p-2 bg-white rounded-xl shadow-sm lg:hidden hover:bg-gray-50 transition-all border border-gray-100">
-            <ArrowLeft size={20} />
-          </button>
-          <h1 className="text-2xl font-display font-bold">Your Progress</h1>
-        </div>
-        <div className="p-2 bg-white rounded-xl shadow-sm border border-gray-100"><BarChart2 size={24} className="text-brand-accent-start" /></div>
-      </header>
+  const renderAnalytics = () => {
+    const stats = user?.stats || DEFAULT_STATS;
+    
+    return (
+      <div className="p-6 pb-32 space-y-8 animate-in fade-in duration-500">
+        <header className="flex justify-between items-center">
+          <div className="flex items-center gap-4">
+            <button onClick={() => setScreen('home')} className="p-2 bg-white rounded-xl shadow-sm lg:hidden hover:bg-gray-50 transition-all border border-gray-100">
+              <ArrowLeft size={20} />
+            </button>
+            <h1 className="text-2xl font-display font-bold">Your Progress</h1>
+          </div>
+          <div className="p-2 bg-white rounded-xl shadow-sm border border-gray-100"><BarChart2 size={24} className="text-brand-accent-start" /></div>
+        </header>
 
-      <section className="grid grid-cols-2 gap-4">
-         <Card className="bg-white p-6 space-y-2">
-           <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Quizzes</span>
-           <div className="flex items-baseline gap-1">
-             <span className="text-3xl font-bold">12</span>
-             <span className="text-green-500 text-xs font-bold">+2</span>
-           </div>
-         </Card>
-         <Card className="bg-white p-6 space-y-2">
-           <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Chat Hr</span>
-           <div className="flex items-baseline gap-1">
-             <span className="text-3xl font-bold">4.5</span>
-             <span className="text-blue-500 text-xs font-bold">hrs</span>
-           </div>
-         </Card>
-      </section>
-
-      <section className="space-y-4">
-        <h3 className="font-bold">Subject Mastery</h3>
-        <div className="space-y-4">
-           {SUBJECTS.map((sub, i) => (
-             <div key={sub} className="space-y-2">
-               <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-brand-text-muted">
-                 <span>{sub}</span>
-                 <span>{[80, 65, 90, 70, 75][i]}%</span>
-               </div>
-               <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-                 <motion.div 
-                  initial={{ width: 0 }} 
-                  animate={{ width: `${[80, 65, 90, 70, 75][i]}%` }}
-                  className={cn(
-                    "h-full",
-                    [80, 65, 90, 70, 75][i] > 80 ? "bg-green-500" :
-                    [80, 65, 90, 70, 75][i] > 60 ? "bg-brand-accent-start" : "bg-red-400"
-                  )}
-                 />
-               </div>
+        <section className="grid grid-cols-2 gap-4">
+           <Card className="bg-white p-6 space-y-2 border-none shadow-sm">
+             <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Quizzes</span>
+             <div className="flex items-baseline gap-1">
+               <span className="text-3xl font-bold">{stats.quizzesCompleted}</span>
+               <span className="text-brand-accent-start text-[10px] font-bold uppercase tracking-widest ml-1">Result</span>
              </div>
-           ))}
-        </div>
-      </section>
+           </Card>
+           <Card className="bg-white p-6 space-y-2 border-none shadow-sm">
+             <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">Chat AI</span>
+             <div className="flex items-baseline gap-1">
+               <span className="text-3xl font-bold">{stats.chatHours.toFixed(1)}</span>
+               <span className="text-brand-accent-start text-[10px] font-bold uppercase tracking-widest ml-1">Hrs</span>
+             </div>
+           </Card>
+        </section>
 
-      <Card className="bg-indigo-600 text-white border-none p-6 space-y-4 overflow-hidden relative">
-         <div className="relative z-10 space-y-2">
-           <h4 className="font-bold">Learning Tip</h4>
-           <p className="text-sm text-indigo-100">You seem to struggle with Algebra. Try asking Rohan for some real-life Math examples!</p>
-           <Button variant="primary" size="sm" className="bg-white/20 border-white/20 text-white" onClick={() => setScreen('chat')}>
-             Ask Rohan
-           </Button>
-         </div>
-         <HelpCircle className="absolute -bottom-6 -right-6 w-32 h-32 text-indigo-500/30" />
-      </Card>
-    </div>
-  );
+        <section className="space-y-4">
+          <h3 className="font-bold text-lg">Subject Mastery</h3>
+          <div className="space-y-6">
+             {SUBJECTS.map((sub) => {
+               const mastery = stats.subjectMastery[sub] || 0;
+               return (
+                <div key={sub} className="space-y-2">
+                  <div className="flex justify-between text-[10px] font-bold uppercase tracking-widest text-brand-text-muted">
+                    <span>{sub}</span>
+                    <span>{mastery}%</span>
+                  </div>
+                  <div className="w-full h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                    <motion.div 
+                      initial={{ width: 0 }} 
+                      animate={{ width: `${mastery}%` }}
+                      className={cn(
+                        "h-full transition-all duration-1000",
+                        mastery > 80 ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" :
+                        mastery > 40 ? "bg-brand-accent-start shadow-[0_0_8px_rgba(var(--brand-accent-start),0.4)]" : "bg-red-400"
+                      )}
+                    />
+                  </div>
+                </div>
+               );
+             })}
+          </div>
+        </section>
+
+        <Card className="bg-brand-text text-white p-6 relative overflow-hidden shadow-xl border-none">
+           <div className="relative z-10 flex justify-between items-center">
+              <div className="space-y-1">
+                 <div className="text-[10px] font-bold uppercase tracking-widest opacity-60">Study Streak</div>
+                 <div className="text-2xl font-bold">{stats.studySessions} Sessions</div>
+              </div>
+              <div className="text-right">
+                 <div className="text-[10px] font-bold uppercase tracking-widest opacity-60">Last Active</div>
+                 <div className="text-sm font-bold">{new Date(stats.lastActive).toLocaleDateString()}</div>
+              </div>
+           </div>
+           <div className="absolute -right-4 -bottom-4 opacity-10">
+              <BarChart2 size={120} />
+           </div>
+        </Card>
+      </div>
+    );
+  };
 
   const handleLogout = () => {
     setUser(null);
@@ -1502,6 +1822,8 @@ export default function App() {
     localStorage.removeItem('globerx_history');
     localStorage.removeItem('globerx_notes');
     localStorage.removeItem('globerx_teacher_id');
+    localStorage.removeItem('globerx_threads');
+    localStorage.removeItem('globerx_completed_topics');
     setScreen('login');
   };
 

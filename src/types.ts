@@ -3,6 +3,14 @@ export type Level = 'Beginner' | 'Intermediate' | 'Advanced';
 export type TeacherId = 'rohan' | 'priya';
 export type Language = 'Hindi' | 'English' | 'Hinglish' | 'Urdu' | 'Marathi';
 
+export interface Analytics {
+  quizzesCompleted: number;
+  chatHours: number;
+  studySessions: number;
+  subjectMastery: Record<string, number>; // Subject name to mastery percentage
+  lastActive: Date;
+}
+
 export interface User {
   name: string;
   class: string; // '1' to '12'
@@ -11,6 +19,7 @@ export interface User {
   preferredLanguage: Language;
   onboarded: boolean;
   mistakes: string[]; // Topic names or question snippets
+  stats: Analytics;
 }
 
 export interface ChatMessage {
