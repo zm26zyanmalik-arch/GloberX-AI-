@@ -1,6 +1,10 @@
+import { GoogleGenAI } from "@google/genai";
 import { ChatMessage, Subject, Level } from '../types';
-
 import { MASTER_CURRICULUM } from "../curriculum";
+
+// Initialize AI
+// In Vite, we use process.env.GEMINI_API_KEY as per skill instructions
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
 
 // Robust retry helper
 const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> => {
@@ -9,12 +13,15 @@ const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 1500): Pr
   } catch (error: any) {
     if (retries <= 0) throw error;
     
-    // Only retry on network errors or transient 5xx errors
-    const isNetworkError = !error.response;
-    const isRetriableStatus = error.response?.status >= 500;
+    // Retry on common transient errors
+    const errorMessage = error.message?.toLowerCase() || '';
+    const isRetriable = errorMessage.includes('fetch') || 
+                       errorMessage.includes('network') || 
+                       errorMessage.includes('quota') ||
+                       errorMessage.includes('timeout');
     
-    if (isNetworkError || isRetriableStatus) {
-      console.warn(`API call failed, retrying in ${delay}ms (${retries} left)...`, error);
+    if (isRetriable) {
+      console.warn(`AI call failed, retrying in ${delay}ms (${retries} left)...`, error);
       await new Promise(r => setTimeout(r, delay));
       return withRetry(fn, retries - 1, delay * 2);
     }
@@ -62,22 +69,27 @@ export async function getTeacherResponse(
   `;
 
   return withRetry(async () => {
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt: teacherPrompt,
-        history,
-        systemInstruction,
-        modelName
-      })
+    const contents = [
+      ...history.map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model' as any,
+        parts: [{ text: msg.text }]
+      })),
+      { role: 'user', parts: [{ text: teacherPrompt }] }
+    ];
+
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents,
+      config: {
+        systemInstruction
+      }
     });
 
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.message || "Unknown AI error");
+    if (!response.text) {
+      throw new Error("I received an empty response from my knowledge base. Please try asking in a different way!");
     }
-    return data.message;
+
+    return response.text;
   });
 }
 
@@ -93,17 +105,23 @@ export async function solveHomework(imageData: string, userClass: string): Promi
   `;
 
   return withRetry(async () => {
-    const response = await fetch("/api/solve", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ imageData, userClass, prompt })
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: [
+        {
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: "image/jpeg", data: imageData.split(',')[1] } }
+          ]
+        }
+      ]
     });
 
-    const data = await response.json();
-    if (!data.success) {
-      throw new Error(data.message || "Failed to solve homework");
+    if (!response.text) {
+      throw new Error("I couldn't read the homework clearly. Could you please upload a sharper image?");
     }
-    return data.message;
+
+    return response.text;
   });
 }
 
@@ -111,29 +129,24 @@ export async function generateStudyPlan(name: string, classRank: string, weakSub
   const prompt = `Generate a 7-day study plan for ${name} who is in Class ${classRank}. 
   Weak subjects: ${weakSubjects.join(', ')}. 
   Focus on balancing strong and weak subjects.
-  Return as a JSON array of objects with keys: id, title, subject, dueDate.`;
+  Return as a JSON array of objects with keys: id, title, subject, dueDate.
+  Example JSON format: [{"id": "1", "title": "Topic Name", "subject": "Maths", "dueDate": "2023-10-01"}]`;
 
   return withRetry(async () => {
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ 
-        prompt, 
-        modelName: "gemini-3-flash-preview", 
-        jsonMode: true // Backend should handle this if needed, or just let it through
-      })
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json"
+      }
     });
 
-    const data = await response.json();
-    if (!data.success) throw new Error(data.message);
     try {
-      // Find JSON block in response if it's mixed with text
-      const text = data.message;
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+      const text = response.text;
+      return JSON.parse(text);
     } catch (e) {
       console.error("JSON Parse Error in Study Plan:", e);
-      throw new Error("Could not generate valid study plan format");
+      throw new Error("Could not generate valid study plan format. Please try again.");
     }
   });
 }
@@ -145,22 +158,16 @@ export async function analyzeMistakes(history: ChatMessage[]) {
 
   return withRetry(async () => {
     const textHistory = history.map(m => `${m.role}: ${m.text}`).join('\n');
-    const response = await fetch("/api/chat", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        prompt: prompt + "\n\nChat History:\n" + textHistory,
-        modelName: "gemini-3-flash-preview"
-      })
+    const response = await ai.models.generateContent({
+      model: "gemini-3-flash-preview",
+      contents: prompt + "\n\nChat History:\n" + textHistory,
+      config: {
+        responseMimeType: "application/json"
+      }
     });
 
-    const data = await response.json();
-    if (!data.success) throw new Error(data.message);
-    
     try {
-      const text = data.message;
-      const jsonMatch = text.match(/\[[\s\S]*\]/);
-      return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+      return JSON.parse(response.text);
     } catch (e) {
       return [];
     }
