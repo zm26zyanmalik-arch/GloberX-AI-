@@ -1,30 +1,25 @@
-import { GoogleGenAI } from "@google/genai";
 import { ChatMessage, Subject, Level } from '../types';
 
 import { MASTER_CURRICULUM } from "../curriculum";
 
-let aiInstance: GoogleGenAI | null = null;
-
-const getAI = () => {
-  if (!aiInstance) {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      console.error("GEMINI_API_KEY is missing. AI features will be unavailable.");
-    }
-    aiInstance = new GoogleGenAI({ apiKey: apiKey || 'missing-key' });
-  }
-  return aiInstance;
-};
-
 // Robust retry helper
-const withRetry = async <T>(fn: () => Promise<T>, retries = 2, delay = 1000): Promise<T> => {
+const withRetry = async <T>(fn: () => Promise<T>, retries = 3, delay = 1500): Promise<T> => {
   try {
     return await fn();
-  } catch (error) {
+  } catch (error: any) {
     if (retries <= 0) throw error;
-    console.warn(`API call failed, retrying in ${delay}ms...`, error);
-    await new Promise(r => setTimeout(r, delay));
-    return withRetry(fn, retries - 1, delay * 2);
+    
+    // Only retry on network errors or transient 5xx errors
+    const isNetworkError = !error.response;
+    const isRetriableStatus = error.response?.status >= 500;
+    
+    if (isNetworkError || isRetriableStatus) {
+      console.warn(`API call failed, retrying in ${delay}ms (${retries} left)...`, error);
+      await new Promise(r => setTimeout(r, delay));
+      return withRetry(fn, retries - 1, delay * 2);
+    }
+    
+    throw error;
   }
 };
 
@@ -36,8 +31,8 @@ export async function getTeacherResponse(
   userLevel: Level,
   teacherName: string,
   teacherPersonality: string
-) {
-  const model = "gemini-3-flash-preview";
+): Promise<string> {
+  const modelName = "gemini-3-flash-preview";
   
   const systemInstruction = `
     You are ${teacherName}, a personal AI teacher for ${userName}.
@@ -67,30 +62,26 @@ export async function getTeacherResponse(
   `;
 
   return withRetry(async () => {
-    // Convert history to Gemini format
-    const contents = [
-      ...history.map(msg => ({
-        role: msg.role === 'user' ? 'user' : 'model',
-        parts: [{ text: msg.text }]
-      })),
-      { role: 'user', parts: [{ text: teacherPrompt }] }
-    ];
-
-    const response = await getAI().models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction
-      }
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: teacherPrompt,
+        history,
+        systemInstruction,
+        modelName
+      })
     });
 
-    return response.text;
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.message || "Unknown AI error");
+    }
+    return data.message;
   });
 }
 
-export async function solveHomework(imageData: string, userClass: string) {
-  const model = "gemini-3-flash-preview";
-  
+export async function solveHomework(imageData: string, userClass: string): Promise<string> {
   const prompt = `
     Analyze this homework image. 
     1. If the image is too blurry to read, inform the student kindly and ask for a clearer photo.
@@ -102,57 +93,76 @@ export async function solveHomework(imageData: string, userClass: string) {
   `;
 
   return withRetry(async () => {
-    const response = await getAI().models.generateContent({
-      model,
-      contents: [
-        {
-          parts: [
-            { text: prompt },
-            { inlineData: { mimeType: "image/jpeg", data: imageData.split(',')[1] } }
-          ]
-        }
-      ]
+    const response = await fetch("/api/solve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imageData, userClass, prompt })
     });
 
-    return response.text;
+    const data = await response.json();
+    if (!data.success) {
+      throw new Error(data.message || "Failed to solve homework");
+    }
+    return data.message;
   });
 }
 
 export async function generateStudyPlan(name: string, classRank: string, weakSubjects: Subject[]) {
-  const model = "gemini-3-flash-preview";
   const prompt = `Generate a 7-day study plan for ${name} who is in Class ${classRank}. 
   Weak subjects: ${weakSubjects.join(', ')}. 
   Focus on balancing strong and weak subjects.
   Return as a JSON array of objects with keys: id, title, subject, dueDate.`;
 
   return withRetry(async () => {
-    const response = await getAI().models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json"
-      }
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ 
+        prompt, 
+        modelName: "gemini-3-flash-preview", 
+        jsonMode: true // Backend should handle this if needed, or just let it through
+      })
     });
 
-    return JSON.parse(response.text);
+    const data = await response.json();
+    if (!data.success) throw new Error(data.message);
+    try {
+      // Find JSON block in response if it's mixed with text
+      const text = data.message;
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+    } catch (e) {
+      console.error("JSON Parse Error in Study Plan:", e);
+      throw new Error("Could not generate valid study plan format");
+    }
   });
 }
 
 export async function analyzeMistakes(history: ChatMessage[]) {
-  const model = "gemini-3-flash-preview";
   const prompt = `Analyze this chat history and identify if the student is making any conceptual mistakes or has weak topics.
   Return a list of 2-3 specific short topic names (e.g. "Quadratic Equations", "Newton's 2nd Law").
   Return as a simple JSON array of strings.`;
 
   return withRetry(async () => {
     const textHistory = history.map(m => `${m.role}: ${m.text}`).join('\n');
-    const response = await getAI().models.generateContent({
-      model,
-      contents: prompt + "\n\nChat History:\n" + textHistory,
-      config: {
-        responseMimeType: "application/json"
-      }
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        prompt: prompt + "\n\nChat History:\n" + textHistory,
+        modelName: "gemini-3-flash-preview"
+      })
     });
-    return JSON.parse(response.text);
+
+    const data = await response.json();
+    if (!data.success) throw new Error(data.message);
+    
+    try {
+      const text = data.message;
+      const jsonMatch = text.match(/\[[\s\S]*\]/);
+      return JSON.parse(jsonMatch ? jsonMatch[0] : text);
+    } catch (e) {
+      return [];
+    }
   }).catch(() => []);
 }

@@ -358,13 +358,13 @@ export default function App() {
         teacher.name,
         teacher.personality
       );
-    } catch (error) {
+    } catch (error: any) {
       console.error("Chat API Error:", error);
       setLoading(false);
       setChatHistory(prev => [...prev, {
         id: Date.now().toString(),
         role: 'model',
-        text: "I'm having a bit of trouble connecting right now. Can you try again?",
+        text: error.message || "I'm having a bit of trouble connecting right now. Can you try again?",
         timestamp: new Date()
       }]);
       return;
